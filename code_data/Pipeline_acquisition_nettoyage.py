@@ -7,9 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ─────────────────────────────────────────────
-# Configuration & logging
-# ─────────────────────────────────────────────
+# Configuration & info suivi
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -17,49 +16,43 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Sentinel value used in forecast data to indicate missing/invalid
+# valeurs sentinelles indiquand donnée manquante
 SENTINEL = -99999.0
 
-# Target temporal resolution
+# résolution temporelle cible
 TARGET_FREQ = "1h"
 
-# Night hours (UTC) where solar production/radiation MUST be 0
-# Conservative: safe for Sion all year round (sunrise never before 05h UTC,
-# sunset never after 21h UTC, even in summer)
+# heure de nuit ou prod solaire doit être nulle
 NIGHT_START_UTC = 21  # 21h UTC = earliest possible full dark
 NIGHT_END_UTC = 5  # 5h UTC  = latest possible still dark
 
-# Z-score threshold for statistical outlier detection
+# zscore pour détection des valeurs aberrantes
 ZSCORE_THRESHOLD = 4.0
 
-# Maximum plausible change per time step (for spike detection)
+# maximum possible pour detection des sauts entre pas de temps consécutifs
 MAX_DELTA = {
-    "temperature": 8.0,  # °C per hour (extreme fronts)
-    "pressure": 5.0,  # hPa per hour
-    "radiation": 600.0,  # W/m² per hour (sunrise/sunset transitions)
-    "precipitation": 15.0,  # mm per hour
+    "temperature": 8.0,  # °C par h
+    "pressure": 5.0,  # hPa par heure
+    "radiation": 600.0,  # W/m² par h
+    "precipitation": 15.0,  # mm par h
 }
 
-
-# ═════════════════════════════════════════════
-# FONCTIONS UTILITAIRES DE NETTOYAGE
-# ═════════════════════════════════════════════
+# FONCTIONS POUR NETTOYAGE
 
 
 def is_night(index: pd.DatetimeIndex) -> pd.Series:
-    """Retourne un masque booléen : True si l'heure est en pleine nuit (UTC).
+    """Retourne booléen : True si heure en pleine nuit.
 
     Nuit = [NIGHT_START_UTC, 23] ∪ [0, NIGHT_END_UTC]
     """
     hours = index.hour  # type: ignore[attr-defined]
-    return (hours >= NIGHT_START_UTC) | (hours <= NIGHT_END_UTC)
+    return (hours >= NIGHT_START_UTC) | (hours <= NIGHT_END_UTC)  # type: ignore
 
 
 def clip_negatives(df: pd.DataFrame, columns: list, name: str = "") -> pd.DataFrame:
-    """Force les valeurs négatives à 0 pour les colonnes spécifiées.
+    """Force valeurs négatives à 0 pour colonnes spécifiées.
 
-    Concerne les variables physiquement non-négatives :
-    production PV, radiation, précipitations, ensoleillement.
+    (production PV, radiation, précipitations, ensoleillement.)
     """
     for col in columns:
         if col in df.columns:
@@ -73,8 +66,7 @@ def clip_negatives(df: pd.DataFrame, columns: list, name: str = "") -> pd.DataFr
 def enforce_night_zero(df: pd.DataFrame, columns: list, name: str = "") -> pd.DataFrame:
     """Force à 0 les colonnes solaires pendant la nuit.
 
-    La production PV et la radiation sont physiquement impossibles la nuit.
-    Toute valeur > 0 la nuit est une erreur de mesure ou un bruit d'onduleur.
+    (Prod PV et irradiance)
     """
     night_mask = is_night(df.index)  # type: ignore[arg-type]
     for col in columns:
@@ -87,11 +79,7 @@ def enforce_night_zero(df: pd.DataFrame, columns: list, name: str = "") -> pd.Da
 
 
 def apply_physical_bounds(df: pd.DataFrame, bounds: dict, name: str = "") -> pd.DataFrame:
-    """Remplace par NaN les valeurs hors des bornes physiques réalistes.
-
-    Les bornes sont définies par variable et correspondent aux limites
-    physiquement possibles pour le site de Sion (Valais, ~480m alt.).
-    """
+    """Remplace par NaN les valeurs hors bornes physiques réalistes."""
     for col, (lo, hi) in bounds.items():
         if col in df.columns:
             mask = (df[col] < lo) | (df[col] > hi)
@@ -110,11 +98,7 @@ def detect_zscore_outliers(
     min_periods: int = 24,
     name: str = "",
 ) -> pd.DataFrame:
-    """Détecte et remplace les outliers statistiques (z-score) par NaN.
-
-    Utilise une fenêtre glissante pour calculer la moyenne et l'écart-type
-    locaux, ce qui respecte la saisonnalité journalière et hebdomadaire.
-    """
+    """Détecte et remplace les outliers statistiques (z-score) par NaN."""
     for col in columns:
         if col not in df.columns:
             continue
@@ -131,11 +115,7 @@ def detect_zscore_outliers(
 
 
 def detect_spikes(df: pd.DataFrame, max_deltas: dict, name: str = "") -> pd.DataFrame:
-    """Détecte les variations trop brutales entre pas de temps consécutifs.
-
-    Un saut de température de 20°C en 1h est physiquement impossible
-    et indique une erreur de capteur. Ces points sont remplacés par NaN.
-    """
+    """Détecte les variations trop brutales entre pas de temps consécutifs."""
     for col, max_delta in max_deltas.items():
         if col not in df.columns:
             continue
@@ -149,7 +129,7 @@ def detect_spikes(df: pd.DataFrame, max_deltas: dict, name: str = "") -> pd.Data
 
 
 def check_cross_consistency(df: pd.DataFrame, name: str = "") -> pd.DataFrame:
-    """Vérifie la cohérence entre variables liées.
+    """Vérifie cohérence entre variables liées.
 
     Règles :
     - Si radiation == 0, alors sunshine devrait être ~0 (tolérance 1 min)
@@ -206,17 +186,11 @@ def detect_temporal_gaps(df: pd.DataFrame, expected_freq: str, name: str = "") -
             log.warning(f"    {prev} → {idx} (trou de {gap})")
 
 
-# ═════════════════════════════════════════════
 # ÉTAPE 1 — Chargement des données brutes
-# ═════════════════════════════════════════════
 
 
 def load_oiken(path: str) -> pd.DataFrame:
-    """Charge les données Oiken (courbe de charge + production PV).
-
-    Format attendu : CSV avec colonnes timestamp + valeurs numériques.
-    Pas temporel d'origine : 15 minutes.
-    """
+    """Charge les données Oiken (courbe de charge + prod PV)."""
     log.info(f"Chargement Oiken: {path}")
     df = pd.read_csv(path, parse_dates=["timestamp"])
 
@@ -236,7 +210,7 @@ def load_oiken(path: str) -> pd.DataFrame:
 
 
 def load_meteo(path: str) -> pd.DataFrame:
-    """Charge les données météo réelles (observations au pas 10 min)."""
+    """Charge les données météo réelles."""
     log.info(f"Chargement météo réelle: {path}")
     df = pd.read_csv(path, parse_dates=["timestamp"])
 
@@ -255,34 +229,38 @@ def load_meteo(path: str) -> pd.DataFrame:
 
 
 def load_forecast(path: str) -> pd.DataFrame:
-    """Charge les prévisions météo (ensemble de runs, pas 1h)."""
+    """Charge les prévisions météo."""
     log.info(f"Chargement prévisions météo: {path}")
-    df = pd.read_csv(path, parse_dates=["timestamp"])
-    df = df.set_index("timestamp")
+    df = pd.read_csv(
+        path,
+        sep=";",
+        decimal=",",
+        parse_dates=["time_utc"],
+        dayfirst=True,
+    )
+    df = df.set_index("time_utc")
+    df.index.name = "timestamp"
 
     log.info(f"  → {len(df)} lignes, {len(df.columns)} colonnes")
     log.info(f"  → période: {df.index.min()} → {df.index.max()}")
     return df
 
 
-# ═════════════════════════════════════════════
 # ÉTAPE 2 — Nettoyage de chaque source
-# ═════════════════════════════════════════════
 
 
 def clean_oiken(df: pd.DataFrame) -> pd.DataFrame:
-    """Nettoie les données Oiken.
+    """Nettoie données Oiken.
 
     Traitements appliqués :
-    1. Localisation UTC et suppression des doublons
-    2. Détection des trous temporels
-    3. Forcer les valeurs PV négatives à 0
-    4. Forcer la production PV à 0 pendant la nuit
-    5. Détection des outliers statistiques (z-score glissant) sur la charge
-    6. Bornes physiques sur la production PV
-    7. Interpolation des NaN (max 6 pas de temps)
-    8. Resampling 15min → 1h
-    9. Création de la colonne PV total
+    1. Localisation UTC et suppression doublons
+    2. Détection trous temporels
+    3. Forcer valeurs PV négatives à 0
+    4. Forcer production PV à 0 nuit
+    5. Détection des outliers statistiques sur la charge
+    6. Bornes physiques sur prod PV
+    7. Interpolation NaN (max 6 pas de temps)
+    8. Création de la colonne PV total
     """
     log.info("Nettoyage Oiken...")
     n_before = len(df)
@@ -332,14 +310,7 @@ def clean_oiken(df: pd.DataFrame) -> pd.DataFrame:
     # 7. Interpolation des NaN (max 6 pas = 1h30 pour données 15min)
     df = interpolate_gaps(df, max_gap=6, name="[Oiken] ")
 
-    # 8. Resample 15min → 1h
-    agg_rules = {"load": "mean", "load_forecast": "mean"}
-    for col in pv_cols:
-        agg_rules[col] = "sum"
-    agg_rules = {k: v for k, v in agg_rules.items() if k in df.columns}
-    df = df.resample(TARGET_FREQ).agg(agg_rules)  # type: ignore[assignment]
-
-    # 9. Colonne PV total
+    # 8. Colonne PV total
     pv_cols_after = [c for c in df.columns if c.startswith("pv_")]
     if pv_cols_after:
         df["pv_total"] = df[pv_cols_after].sum(axis=1)
@@ -360,10 +331,8 @@ def clean_meteo(df: pd.DataFrame) -> pd.DataFrame:
     6. Détection des outliers statistiques (z-score glissant)
     7. Cohérence croisée radiation ↔ sunshine
     8. Interpolation des NaN (max 6 pas)
-    9. Resampling 10min → 1h
     """
     log.info("Nettoyage météo réelle...")
-    n_before = len(df)
 
     # 1. Doublons et tri
     n_dup = df.index.duplicated().sum()
@@ -410,19 +379,6 @@ def clean_meteo(df: pd.DataFrame) -> pd.DataFrame:
 
     # 8. Interpolation (max 6 pas = 1h pour données 10min)
     df = interpolate_gaps(df, max_gap=6, name="[Météo] ")
-
-    # 9. Resample 10min → 1h
-    agg_rules = {
-        "temperature": "mean",
-        "pressure": "mean",
-        "radiation": "mean",
-        "precipitation": "sum",
-        "sunshine": "sum",
-    }
-    agg_rules = {k: v for k, v in agg_rules.items() if k in df.columns}
-    df = df.resample(TARGET_FREQ).agg(agg_rules)  # type: ignore[assignment]
-
-    log.info(f"  → {n_before} lignes (10min) → {len(df)} lignes (1h)")
     return df
 
 
@@ -451,16 +407,16 @@ def clean_forecast(df: pd.DataFrame) -> pd.DataFrame:
 
     # 2-3. Moyenne d'ensemble par variable
     variable_map = {
-        "PRED_T_2M_ctrl": "pred_temperature",
-        "PRED_GLOB_ctrl": "pred_radiation",
-        "PRED_TOT_PREC_ctrl": "pred_precipitation",
-        "PRED_DURSUN_ctrl": "pred_sunshine",
-        "PRED_PS_q10": "pred_pressure",
+        "T_2M_ctrl_lt": "pred_temperature",
+        "GLOB_ctrl_lt": "pred_radiation",
+        "TOT_PREC_ctrl_lt": "pred_precipitation",
+        "DURSUN_ctrl_lt": "pred_sunshine",
+        "PS_ctrl_lt": "pred_pressure",
     }
 
     result = pd.DataFrame(index=df.index)
     for prefix, new_name in variable_map.items():
-        run_cols = [c for c in df.columns if c.startswith(prefix + "_")]
+        run_cols = [c for c in df.columns if c.startswith(prefix)]
         if not run_cols:
             log.warning(f"  Aucune colonne trouvée pour {prefix}")
             continue
@@ -473,7 +429,8 @@ def clean_forecast(df: pd.DataFrame) -> pd.DataFrame:
 
         if valid_cols:
             result[new_name] = df[valid_cols].mean(axis=1)
-            log.info(f"  {new_name}: moyenne de {len(valid_cols)} runs")
+            result[new_name + "_spread"] = df[valid_cols].std(axis=1)
+            log.info(f"  {new_name}: moyenne + spread de {len(valid_cols)} runs")
         else:
             log.warning(f"  {new_name}: aucun run valide !")
 
@@ -487,13 +444,42 @@ def clean_forecast(df: pd.DataFrame) -> pd.DataFrame:
     }
     result = apply_physical_bounds(result, physical_bounds, name="[Prév] ")
 
+    spread_bounds = {
+        "pred_temperature_spread": (0, 20),
+        "pred_radiation_spread": (0, 600),
+        "pred_precipitation_spread": (0, 30),
+        "pred_sunshine_spread": (0, 61),
+        "pred_pressure_spread": (0, 2000),  # en Pa (avant conversion)
+    }
+    result = apply_physical_bounds(result, spread_bounds, name="[Prév spread] ")
+
     # 5. Forcer radiation et sunshine à 0 la nuit
-    solar_cols = [c for c in ["pred_radiation", "pred_sunshine"] if c in result.columns]
+    solar_cols = [
+        c
+        for c in [
+            "pred_radiation",
+            "pred_sunshine",
+            "pred_radiation_spread",
+            "pred_sunshine_spread",
+        ]
+        if c in result.columns
+    ]
     result = enforce_night_zero(result, solar_cols, name="[Prév] ")
 
     # 6. Forcer les non-négatifs
     non_neg = [
-        c for c in ["pred_radiation", "pred_precipitation", "pred_sunshine"] if c in result.columns
+        c
+        for c in [
+            "pred_radiation",
+            "pred_precipitation",
+            "pred_sunshine",
+            "pred_radiation_spread",
+            "pred_precipitation_spread",
+            "pred_sunshine_spread",
+            "pred_temperature_spread",
+            "pred_pressure_spread",
+        ]
+        if c in result.columns
     ]
     result = clip_negatives(result, non_neg, name="[Prév] ")
 
@@ -501,6 +487,9 @@ def clean_forecast(df: pd.DataFrame) -> pd.DataFrame:
     if "pred_pressure" in result.columns:
         result["pred_pressure"] = result["pred_pressure"] / 100.0
         log.info("  Pression convertie Pa → hPa")
+    if "pred_pressure_spread" in result.columns:
+        result["pred_pressure_spread"] = result["pred_pressure_spread"] / 100.0
+        log.info("  Pression spread convertie Pa → hPa")
 
     # 8. Sauts et outliers statistiques
     pred_deltas = {
@@ -523,9 +512,7 @@ def clean_forecast(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-# ═════════════════════════════════════════════
 # ÉTAPE 3 — Fusion et export
-# ═════════════════════════════════════════════
 
 
 def merge_datasets(
@@ -557,81 +544,7 @@ def merge_datasets(
     return merged
 
 
-def generate_report(df: pd.DataFrame) -> str:
-    """Génère un rapport textuel résumant le dataset nettoyé."""
-    lines = [
-        "=" * 70,
-        "RAPPORT DU PIPELINE — Dataset nettoyé",
-        "=" * 70,
-        f"Période      : {df.index.min()} → {df.index.max()}",
-        f"Pas temporel : {TARGET_FREQ}",
-        f"Lignes       : {len(df)}",
-        f"Colonnes     : {len(df.columns)}",
-        "",
-        "─── Couverture par colonne ───",
-    ]
-    for col in df.columns:
-        n_valid = df[col].notna().sum()
-        pct = n_valid / len(df) * 100
-        lines.append(f"  {col:<30s} {n_valid:>6d}/{len(df)} ({pct:.1f}%)")
-
-    lines.append("")
-    lines.append("─── Contrôles qualité ───")
-
-    # Vérification PV nuit
-    pv_cols = [c for c in df.columns if c.startswith("pv_")]
-    night_mask = is_night(df.index)  # type: ignore[arg-type]
-    for col in pv_cols:
-        if col in df.columns:
-            night_prod = (df.loc[night_mask, col] > 0).sum()
-            lines.append(f"  {col} production nocturne > 0: {night_prod}")
-
-    # Radiation nuit
-    for col in ["radiation", "pred_radiation"]:
-        if col in df.columns:
-            night_rad = (df.loc[night_mask, col] > 0).sum()
-            lines.append(f"  {col} radiation nocturne > 0: {night_rad}")
-
-    # Valeurs négatives
-    non_neg_cols = pv_cols + [
-        c
-        for c in [
-            "radiation",
-            "precipitation",
-            "sunshine",
-            "pred_radiation",
-            "pred_precipitation",
-            "pred_sunshine",
-        ]
-        if c in df.columns
-    ]
-    for col in non_neg_cols:
-        if col in df.columns:
-            n_neg = (df[col] < 0).sum()
-            if n_neg > 0:
-                lines.append(f"  ⚠️ {col}: {n_neg} valeurs négatives restantes")
-
-    # NaN restants
-    lines.append("")
-    lines.append("─── NaN restants par colonne ───")
-    for col in df.columns:
-        n_nan = df[col].isna().sum()
-        if n_nan > 0:
-            lines.append(f"  {col}: {n_nan} NaN ({n_nan / len(df) * 100:.1f}%)")
-
-    lines.extend(
-        [
-            "",
-            "─── Statistiques descriptives ───",
-            df.describe().round(3).to_string(),
-        ]
-    )
-    return "\n".join(lines)
-
-
-# ═════════════════════════════════════════════
 # MAIN
-# ═════════════════════════════════════════════
 
 
 def run_pipeline(
@@ -641,7 +554,7 @@ def run_pipeline(
     output_path: str,
 ) -> pd.DataFrame:
     """Exécute le pipeline complet."""
-    log.info("🚀 Démarrage du pipeline d'acquisition")
+    log.info("Démarrage du pipeline d'acquisition")
 
     # Étape 1 — Chargement
     oiken_raw = load_oiken(oiken_path)
@@ -651,24 +564,16 @@ def run_pipeline(
     # Étape 2 — Nettoyage
     oiken_clean = clean_oiken(oiken_raw)
     meteo_clean = clean_meteo(meteo_raw)
-    forecast_clean = clean_forecast(forecast_raw)
+    # prevision_data.csv déjà nettoyé
 
     # Étape 3 — Fusion
-    dataset = merge_datasets(oiken_clean, meteo_clean, forecast_clean)
+    dataset = merge_datasets(oiken_clean, meteo_clean, forecast_raw)
 
     # Export
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     dataset.to_csv(output)
-    log.info(f"✅ Dataset sauvegardé: {output}")
-
-    # Rapport
-    report = generate_report(dataset)
-    report_path = output.with_suffix(".report.txt")
-    report_path.write_text(report, encoding="utf-8")
-    log.info(f"📊 Rapport sauvegardé: {report_path}")
-    print("\n" + report)
-
+    log.info(f" Dataset sauvegardé: {output}")
     return dataset
 
 
@@ -684,7 +589,7 @@ if __name__ == "__main__":
         "--meteo", default=_find_latest("sion_meteo_*.csv"), help="Chemin du CSV météo réelle"
     )
     parser.add_argument(
-        "--forecast", default=_find_latest("sion_prevision_*.csv"), help="Chemin du CSV prévisions"
+        "--forecast", default="data/prevision_data.csv", help="Chemin du CSV prévisions"
     )
     parser.add_argument(
         "--output", default="data/dataset_clean.csv", help="Chemin du CSV de sortie"

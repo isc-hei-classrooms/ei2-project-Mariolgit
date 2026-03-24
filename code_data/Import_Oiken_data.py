@@ -1,4 +1,4 @@
-"""Module for importing Okien data."""
+"""Module for importing Oiken data."""
 
 import sys
 from datetime import datetime

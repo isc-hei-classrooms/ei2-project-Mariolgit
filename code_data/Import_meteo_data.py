@@ -52,18 +52,18 @@ from(bucket: "{bucket}")
             )
     client.close()
 
-    # Create data directory if it doesn't exist
+    # Creation data directory
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
 
-    # Create timestamped filename
+    # Creation fichier temporel
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     filename = data_dir / f"sion_meteo_{timestamp}.csv"
 
-    # Save to CSV (one column per measurement)
+    # Sauvegarde dans csv
     df = pd.DataFrame(records)
     if not df.empty:
-        # Add an index for duplicate timestamp-measurement pairs
+        # Ajout index duplication
         df["dup_idx"] = df.groupby(["timestamp", "measurement"]).cumcount()
         df = df.pivot_table(
             index="timestamp",

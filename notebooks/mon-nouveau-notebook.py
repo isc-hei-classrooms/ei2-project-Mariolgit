@@ -20,9 +20,8 @@ def _():
     import polars as pl
     import scipy.stats as stats
     from plotly.subplots import make_subplots
-    from sklearn.feature_selection import mutual_info_regression
 
-    return go, make_subplots, mutual_info_regression, np, pl, stats
+    return go, make_subplots, np, pl, stats
 
 
 @app.cell(hide_code=True)
@@ -112,7 +111,7 @@ def _(df_filtered, mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ## 2 — Visualisation temporelle
@@ -135,6 +134,11 @@ def _(mo):
         "radiation",
         "precipitation",
         "sunshine",
+        # predictions
+        "pred_temperature",
+        "pred_radiation",
+        "pred_precipitation",
+        "pred_sunshine",
     ]
     s2_vars = mo.ui.multiselect(
         options=_numeric_vars,
@@ -193,7 +197,7 @@ def _(df_filtered, go, mo, pl, s2_resolution, s2_vars):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Scatter plot
@@ -310,7 +314,7 @@ def _(mo):
     return s3_color, s3_heatmap_vars, s3_x, s3_y
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, go, mo, np, s3_heatmap_vars):
     _vars = [v for v in s3_heatmap_vars.value if v in df_filtered.columns]
     if len(_vars) >= 2:
@@ -337,7 +341,7 @@ def _(df_filtered, go, mo, np, s3_heatmap_vars):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, go, mo, s3_color, s3_x, s3_y, stats):
     _xv = s3_x.value
     _yv = s3_y.value
@@ -395,12 +399,12 @@ def _(df_filtered, go, mo, s3_color, s3_x, s3_y, stats):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## Section 4 — Analyse par période
+    ##4 — Analyse par période
     """)
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     s4_weekend = mo.ui.switch(label="Weekend uniquement", value=False)
     s4_season = mo.ui.dropdown(
@@ -412,7 +416,7 @@ def _(mo):
     return s4_season, s4_weekend
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, go, mo, pl, s4_season, s4_weekend):
     _df4 = df_filtered
     if s4_weekend.value:
@@ -443,7 +447,7 @@ def _(df_filtered, go, mo, pl, s4_season, s4_weekend):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, go, make_subplots, mo, pl):
     _df_day = df_filtered.filter(pl.col("is_day"))
     _df_night = df_filtered.filter(~pl.col("is_day"))
@@ -476,128 +480,15 @@ def _(df_filtered, go, make_subplots, mo, pl):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
     mo.md("""
-    ## Section 5 — Analyse des décalages temporels
+    ## 5 — Production solaire
     """)
     return
 
 
-@app.cell
-def _(mo):
-    _weather_opts = [
-        "temperature",
-        "pressure",
-        "radiation",
-        "precipitation",
-        "sunshine",
-        "pred_temperature",
-        "pred_radiation",
-        "pred_precipitation",
-        "pred_sunshine",
-    ]
-    s5_var = mo.ui.dropdown(
-        options=_weather_opts,
-        value="temperature",
-        label="Variable météo",
-    )
-    s5_lag = mo.ui.slider(start=0, stop=48, step=1, value=6, label="Décalage (heures)")
-    mo.hstack([s5_var, s5_lag])
-    return s5_lag, s5_var
-
-
-@app.cell
-def _(df_filtered, go, mo, s5_lag, s5_var, stats):
-    _var5 = s5_var.value
-    _lag5 = s5_lag.value
-    if _var5 in df_filtered.columns:
-        _df5 = df_filtered.select(["load", _var5]).drop_nulls()
-        _load5 = _df5["load"].to_numpy().astype(float)
-        _wv5 = _df5[_var5].to_numpy().astype(float)
-        if 0 < _lag5 < len(_load5):
-            _wv5_l = _wv5[:-_lag5]
-            _load5_l = _load5[_lag5:]
-        else:
-            _wv5_l, _load5_l = _wv5, _load5
-        _r5, _p5 = stats.pearsonr(_load5_l, _wv5_l)
-        _fig5b = go.Figure(
-            go.Scatter(
-                x=_wv5_l.tolist(),
-                y=_load5_l.tolist(),
-                mode="markers",
-                marker=dict(size=3, opacity=0.4, color="steelblue"),
-            )
-        )
-        _fig5b.update_layout(
-            title=f"Load vs {_var5} (lag={_lag5}h) — r_Pearson = {_r5:.3f}",
-            xaxis_title=f"{_var5} [lag={_lag5}h]",
-            yaxis_title="load",
-            height=450,
-        )
-        mo.vstack(
-            [
-                mo.ui.plotly(_fig5b),
-                mo.md(f"**Pearson r** = `{_r5:.4f}` (p = {_p5:.2e})"),
-            ]
-        )
-    else:
-        mo.md(f"Colonne `{_var5}` absente.")
-    return
-
-
-@app.cell
-def _(df_filtered, go, mo, np, stats):
-    _w_vars5c = [
-        v
-        for v in ["temperature", "pressure", "radiation", "precipitation", "sunshine"]
-        if v in df_filtered.columns
-    ]
-    _max_lag = 48
-    _load_full = df_filtered["load"].to_numpy().astype(float)
-    _corr_mat = np.full((len(_w_vars5c), _max_lag + 1), np.nan)
-    for _wi, _wv in enumerate(_w_vars5c):
-        _col_full = df_filtered[_wv].to_numpy().astype(float)
-        _valid = ~(np.isnan(_load_full) | np.isnan(_col_full))
-        _lv = _load_full[_valid]
-        _cv5 = _col_full[_valid]
-        for _li in range(_max_lag + 1):
-            if _li == 0:
-                _rv, _ = stats.pearsonr(_lv, _cv5)
-            elif _li < len(_lv):
-                _rv, _ = stats.pearsonr(_lv[_li:], _cv5[:-_li])
-            else:
-                _rv = np.nan
-            _corr_mat[_wi, _li] = _rv
-    _fig5c = go.Figure(
-        go.Heatmap(
-            z=_corr_mat.tolist(),
-            x=list(range(_max_lag + 1)),
-            y=_w_vars5c,
-            colorscale="RdBu",
-            zmid=0,
-            colorbar=dict(title="Pearson r"),
-        )
-    )
-    _fig5c.update_layout(
-        title="Pearson r (Load ~ Météo) par décalage temporel",
-        xaxis_title="Décalage (heures)",
-        yaxis_title="Variable météo",
-        height=380,
-    )
-    mo.ui.plotly(_fig5c)
-    return
-
-
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## Section 6 — Production solaire
-    """)
-    return
-
-
-@app.cell
 def _(df_filtered, go, make_subplots, mo, pl):
     _df6 = (
         df_filtered.sort("timestamp")
@@ -640,43 +531,15 @@ def _(df_filtered, go, make_subplots, mo, pl):
     return
 
 
-@app.cell
-def _(df_filtered, go, mo):
-    _sub6b = df_filtered.select(["pv_total", "load", "hour"]).drop_nulls()
-    _fig6b = go.Figure(
-        go.Scatter(
-            x=_sub6b["pv_total"].to_list(),
-            y=_sub6b["load"].to_list(),
-            mode="markers",
-            marker=dict(
-                color=_sub6b["hour"].to_list(),
-                colorscale="HSV",
-                showscale=True,
-                colorbar=dict(title="Heure"),
-                size=3,
-                opacity=0.45,
-            ),
-        )
-    )
-    _fig6b.update_layout(
-        title="PV total vs Charge (coloré par heure du jour)",
-        xaxis_title="PV total",
-        yaxis_title="Charge (load)",
-        height=450,
-    )
-    mo.ui.plotly(_fig6b)
-    return
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## Section 7 — Détection d'anomalies
+    ##7 — Détection d'anomalies
     """)
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, mo, pl):
     _numeric_types = [pl.Float64, pl.Float32, pl.Int64, pl.Int32, pl.Int16, pl.UInt32]
     _skip = {"hour", "weekday"}
@@ -692,7 +555,7 @@ def _(df_filtered, mo, pl):
     return (s7_var,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(df_filtered, go, make_subplots, mo, s7_var):
     _v7 = s7_var.value
     _vals7 = df_filtered[_v7].drop_nulls().to_list()
@@ -717,143 +580,6 @@ def _(df_filtered, go, make_subplots, mo, s7_var):
         showlegend=False,
     )
     mo.ui.plotly(_fig7b)
-    return
-
-
-@app.cell
-def _(df_filtered, go, mo, np):
-    _n7 = min(500, df_filtered.shape[0])
-    _df7s = df_filtered.sample(n=_n7, seed=42)
-    _null_z = np.column_stack([_df7s[c].is_null().to_numpy().astype(int) for c in _df7s.columns])
-    _fig7c = go.Figure(
-        go.Heatmap(
-            z=_null_z.tolist(),
-            x=list(_df7s.columns),
-            y=list(range(_n7)),
-            colorscale=[[0, "white"], [1, "red"]],
-            showscale=False,
-        )
-    )
-    _fig7c.update_layout(
-        title="Matrice des valeurs nulles (échantillon ≤ 500 lignes)",
-        xaxis_title="Colonne",
-        yaxis_title="Index",
-        height=420,
-    )
-    mo.ui.plotly(_fig7c)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## Section 8 — Résumé & sélection de features
-    """)
-    return
-
-
-@app.cell
-def _(df_filtered, mo, np, pl, stats):
-    _feat8 = [
-        c
-        for c in [
-            "load_forecast",
-            "pv_total",
-            "pv_central_valais",
-            "pv_sion",
-            "pv_sierre",
-            "pv_remote",
-            "temperature",
-            "pressure",
-            "radiation",
-            "precipitation",
-            "sunshine",
-            "pred_temperature",
-            "pred_radiation",
-            "pred_precipitation",
-            "pred_sunshine",
-            "hour",
-            "weekday",
-        ]
-        if c in df_filtered.columns
-    ]
-    _load8 = df_filtered["load"].to_numpy().astype(float)
-    _rows8 = []
-    for _fc in _feat8:
-        _fv = df_filtered[_fc].to_numpy().astype(float)
-        _m8 = ~(np.isnan(_load8) | np.isnan(_fv))
-        if _m8.sum() > 10:
-            _r8, _p8 = stats.pearsonr(_load8[_m8], _fv[_m8])
-            _rows8.append(
-                {"feature": _fc, "pearson_r": round(float(_r8), 4), "p_value": f"{_p8:.2e}"}
-            )
-    pearson_df = pl.DataFrame(_rows8).sort("pearson_r", descending=True)
-    mo.vstack(
-        [
-            mo.md("### Corrélation de Pearson avec `load` (classement décroissant)"),
-            mo.as_html(pearson_df),
-        ]
-    )
-    return (pearson_df,)
-
-
-@app.cell
-def _(df_filtered, mo, mutual_info_regression, np, pl):
-    _feat_mi = [
-        c
-        for c in [
-            "load_forecast",
-            "pv_total",
-            "temperature",
-            "pressure",
-            "radiation",
-            "precipitation",
-            "sunshine",
-            "pred_temperature",
-            "pred_radiation",
-            "pred_precipitation",
-            "pred_sunshine",
-            "hour",
-            "weekday",
-        ]
-        if c in df_filtered.columns
-    ]
-    _sub_mi = df_filtered.select(["load"] + _feat_mi).drop_nulls()
-    _arr_mi = _sub_mi.to_numpy().astype(float)
-    _mi_vals = mutual_info_regression(_arr_mi[:, 1:], _arr_mi[:, 0], random_state=42)
-    mi_df = pl.DataFrame(
-        {
-            "feature": _feat_mi,
-            "mutual_info": np.round(_mi_vals, 4).tolist(),
-        }
-    ).sort("mutual_info", descending=True)
-    mo.vstack(
-        [
-            mo.md("### Information mutuelle avec `load` (sklearn)"),
-            mo.as_html(mi_df),
-        ]
-    )
-    return (mi_df,)
-
-
-@app.cell
-def _(mi_df, mo, pearson_df):
-    mo.vstack(
-        [
-            mo.md("""
-        ## Synthèse — Sélection de features
-
-        ### Corrélation de Pearson
-        - **|r| > 0.7** : corrélation linéaire forte
-        - **|r| 0.4–0.7** : corrélation modérée
-        - **|r| < 0.2** : faible corrélation linéaire
-        """),
-            mo.md("#### Top features — Pearson r"),
-            mo.as_html(pearson_df),
-            mo.md("#### Top features — Information Mutuelle"),
-            mo.as_html(mi_df),
-        ]
-    )
     return
 
 
