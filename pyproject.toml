@@ -32,6 +32,9 @@ extend-select = [
   "UP",  # pyupgrade
   "D",   # pydocstyle
 ]
+ignore = [
+  "D401",  # imperative mood — not applicable to French docstrings
+]
 
 # Docstring style numpy (instead of Google).
 [tool.ruff.lint.pydocstyle]
