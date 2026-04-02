@@ -28,7 +28,7 @@ def _(mo):
     mo.md("""
     # **Features Engineering**
     ## Data : Oiken & Prévisions COSMO/ICON
-    Données horaires Oct 2022 – Mar 2026 (sans météo réelle pour éviter le data leakage)
+    Données horaires Oct 2022 – Mar 2026
     ---
     """)
     return
@@ -374,6 +374,254 @@ def _(df_filtered, go, mo, np, s4_vars):
     else:
         _output = mo.md("Sélectionnez au moins 2 variables.")
     _output
+    return
+
+
+@app.cell(hide_code=True)
+def _(pl):
+    import glob as _glob
+
+    _files = sorted(_glob.glob("data/sion_meteo_reelle_*.csv"))
+    _path = _files[-1] if _files else None
+    if _path:
+        df_obs = pl.read_csv(_path, try_parse_dates=True, infer_schema_length=None)
+    else:
+        df_obs = pl.DataFrame()
+    return (df_obs,)
+
+
+@app.cell(hide_code=True)
+def _(df, df_obs, pl):
+    import datetime as _dt
+
+    _sec5_start = _dt.datetime(2022, 10, 1, tzinfo=_dt.UTC)
+    _sec5_stop = _dt.datetime(2023, 10, 1, tzinfo=_dt.UTC)
+    if df_obs.is_empty():
+        df_merged = df
+    else:
+        df_merged = df.join(df_obs, on="timestamp", how="left")
+    df_merged = df_merged.filter(pl.col("timestamp").is_between(_sec5_start, _sec5_stop))
+    return (df_merged,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 5 — Corrélation météo réelle vs prévisions
+    Observations Sion (oct 2022 – oct 2025) fusionnées avec les prévisions COSMO/ICON.
+    Les heures postérieures à oct 2025 ont des `NaN` sur les colonnes `_obs`.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### 5a — Heatmap de corrélation étendue
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _all_vars = [
+        # Cible
+        "load",
+        # Calendaire
+        "hour",
+        "weekday",
+        "month",
+        # Prévisions
+        "pred_radiation",
+        "pred_temperature",
+        "pred_precipitation",
+        "pred_sunshine",
+        # Observations réelles
+        "temp_obs",
+        "radiation_obs",
+        "precip_obs",
+        "sunshine_obs",
+        "pressure_obs",
+    ]
+    s5a_vars = mo.ui.multiselect(
+        options=_all_vars,
+        value=_all_vars,
+        label="Variables pour heatmap 5a",
+    )
+    s5a_vars
+    return (s5a_vars,)
+
+
+@app.cell(hide_code=True)
+def _(date_range, df_merged, go, mo, np, pl, s5a_vars):
+    _start, _stop = date_range.value
+    _df = df_merged.filter(pl.col("timestamp").dt.date().is_between(_start, _stop))
+    _vars = [v for v in s5a_vars.value if v in _df.columns]
+    if len(_vars) >= 2:
+        _sub = _df.select(_vars).drop_nulls()
+        _mat = _sub.to_numpy().astype(float)
+        _n = len(_vars)
+        _corr = np.corrcoef(_mat, rowvar=False)
+        _text = [[f"{_corr[i][j]:.2f}" for j in range(_n)] for i in range(_n)]
+        _fig = go.Figure(
+            go.Heatmap(
+                z=_corr.tolist(),
+                x=_vars,
+                y=_vars,
+                colorscale="RdBu",
+                zmid=0,
+                text=_text,
+                texttemplate="%{text}",
+            )
+        )
+        _fig.update_layout(
+            title="Corrélation Pearson — load, prévisions & observations réelles",
+            height=600,
+        )
+        _out5a = mo.ui.plotly(_fig)
+    else:
+        _out5a = mo.md("Sélectionnez au moins 2 variables.")
+    _out5a
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### 5b — Scatter plots : observations vs prévisions vs load
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(date_range, df_merged, go, mo, pl, stats):
+    _start, _stop = date_range.value
+    _df = df_merged.filter(pl.col("timestamp").dt.date().is_between(_start, _stop))
+
+    def _scatter(xcol: str, ycol: str, color: str) -> go.Figure:
+        _sub = _df.select([xcol, ycol]).drop_nulls()
+        if _sub.shape[0] < 10:
+            return go.Figure().update_layout(title=f"{ycol} vs {xcol} — données insuffisantes")
+        _x = _sub[xcol].to_numpy().astype(float)
+        _y = _sub[ycol].to_numpy().astype(float)
+        _r, _ = stats.pearsonr(_x, _y)
+        _fig = go.Figure(
+            go.Scatter(
+                x=_x.tolist(),
+                y=_y.tolist(),
+                mode="markers",
+                marker=dict(size=3, opacity=0.4, color=color),
+            )
+        )
+        _fig.update_layout(
+            title=f"{ycol} vs {xcol}  (r = {_r:.3f})",
+            xaxis_title=xcol,
+            yaxis_title=ycol,
+            height=380,
+            margin=dict(t=50, b=40),
+        )
+        return _fig
+
+    _plots = [
+        mo.ui.plotly(_scatter("pred_radiation", "radiation_obs", "steelblue")),
+        mo.ui.plotly(_scatter("pred_temperature", "temp_obs", "tomato")),
+        mo.ui.plotly(_scatter("radiation_obs", "load", "seagreen")),
+        mo.ui.plotly(_scatter("pred_radiation", "load", "darkorange")),
+    ]
+    mo.vstack([mo.hstack(_plots[:2]), mo.hstack(_plots[2:])])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ### 5c — Agrégats J-1 (anti-leakage)
+    Les agrégats sont calculés sur le jour J-1 **complet** (00h–23h UTC) et rattachés aux heures du jour J.
+    Aucune donnée du jour J ou J+1 n'est utilisée.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(df_merged, go, mo, np, pl):
+    # Anti-leakage: agrégats du jour J-1 uniquement
+    _daily_base = df_merged.with_columns(pl.col("timestamp").dt.date().alias("_date"))
+
+    # Agréger par jour (jour complet J-1)
+    _daily_agg = (
+        _daily_base.group_by("_date")
+        .agg(
+            [
+                pl.col("radiation_obs").mean().alias("radiation_obs_J1_mean"),
+                pl.col("radiation_obs").max().alias("radiation_obs_J1_max"),
+                pl.col("temp_obs").mean().alias("temp_obs_J1_mean"),
+                pl.col("load").mean().alias("load_J1_mean"),
+            ]
+        )
+        # Décaler d'un jour : les agrégats du jour D sont rattachés au jour D+1
+        .with_columns((pl.col("_date") + pl.duration(days=1)).alias("_date"))
+    )
+
+    # Join sur date
+    _df_J1 = _daily_base.join(_daily_agg, on="_date", how="left")
+
+    # Ratio load/irradiance J-1 (protéger contre radiation ≤ 1 W/m²)
+    _df_J1 = _df_J1.with_columns(
+        pl.when(pl.col("radiation_obs_J1_mean") > 1.0)
+        .then(pl.col("load_J1_mean") / pl.col("radiation_obs_J1_mean"))
+        .otherwise(None)
+        .alias("ratio_load_irad_J1")
+    )
+
+    # Heatmap de corrélation J-1
+    _j1_vars = [
+        "load",
+        "radiation_obs_J1_mean",
+        "radiation_obs_J1_max",
+        "temp_obs_J1_mean",
+        "load_J1_mean",
+        "ratio_load_irad_J1",
+    ]
+    _sub_j1 = _df_J1.select([v for v in _j1_vars if v in _df_J1.columns]).drop_nulls()
+    _actual_vars = [v for v in _j1_vars if v in _df_J1.columns]
+
+    if _sub_j1.shape[0] > 10 and len(_actual_vars) >= 2:
+        _mat_j1 = _sub_j1.to_numpy().astype(float)
+        _corr_j1 = np.corrcoef(_mat_j1, rowvar=False)
+        _n_j1 = len(_actual_vars)
+        _text_j1 = [[f"{_corr_j1[i][j]:.2f}" for j in range(_n_j1)] for i in range(_n_j1)]
+        _fig_j1 = go.Figure(
+            go.Heatmap(
+                z=_corr_j1.tolist(),
+                x=_actual_vars,
+                y=_actual_vars,
+                colorscale="RdBu",
+                zmid=0,
+                text=_text_j1,
+                texttemplate="%{text}",
+            )
+        )
+        _fig_j1.update_layout(
+            title="Corrélation Pearson — load horaire vs agrégats météo J-1",
+            height=500,
+        )
+
+        # Afficher aussi les corrélations avec le load en texte
+        _load_idx = _actual_vars.index("load")
+        _corr_lines = [
+            f"- **{_actual_vars[j]}** : r = `{_corr_j1[_load_idx][j]:.4f}`"
+            for j in range(_n_j1)
+            if j != _load_idx
+        ]
+        _out5c = mo.vstack(
+            [
+                mo.ui.plotly(_fig_j1),
+                mo.md("**Corrélations avec `load` :**\n" + "\n".join(_corr_lines)),
+            ]
+        )
+    else:
+        _out5c = mo.md("Données insuffisantes pour les agrégats J-1.")
+    _out5c
     return
 
 
